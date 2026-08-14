@@ -1,0 +1,44 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Product {
+  id            Int      @id @default(autoincrement())
+  name          String
+  category      String?
+  price         Float
+  stock         Int
+  lowStockLimit Int      @default(5)
+  leadTimeDays  Int      @default(7)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  sales         Sale[]
+  history       InventoryHistory[]
+}
+
+model Sale {
+  id        Int      @id @default(autoincrement())
+  quantity  Int
+  price     Float
+  total     Float
+  createdAt DateTime @default(now())
+
+  productId Int
+  product   Product  @relation(fields: [productId], references: [id])
+}
+
+model InventoryHistory {
+  id        Int      @id @default(autoincrement())
+  type      String
+  quantity  Int
+  createdAt DateTime @default(now())
+
+  productId Int
+  product   Product  @relation(fields: [productId], references: [id])
+}
