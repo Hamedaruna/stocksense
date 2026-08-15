@@ -134,11 +134,14 @@ if (salesPerDay <= 0) {
     });
 
     return NextResponse.json(productsWithSold);
-  } catch (error) {
-    console.error("GET PRODUCTS ERROR:", error);
+   } catch (error) {
+    console.error("FAILED TO CREATE PRODUCT:", error);
 
     return NextResponse.json(
-      { error: "Failed to fetch products" },
+      {
+        error: "Failed to create product",
+        details: error instanceof Error ? error.message : String(error),
+      },
       { status: 500 }
     );
   }
