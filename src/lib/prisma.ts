@@ -13,8 +13,8 @@ const prisma =
     adapter:
       process.env.NODE_ENV === "production"
         ? new PrismaLibSql({
-            url: process.env.TURSO_DATABASE_URL!,
-            authToken: process.env.TURSO_AUTH_TOKEN!,
+            url: process.env.STOCKSENSE_TURSO_DATABASE_URL!,
+            authToken: process.env.STOCKSENSE_TURSO_AUTH_TOKEN!,
           })
         : new PrismaBetterSqlite3({
             url: process.env.DATABASE_URL ?? "file:./dev.db",
