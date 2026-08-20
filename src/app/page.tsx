@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { authClient } from "@/lib/auth-client";
 
 type SalesSummary = {
   totalRevenue: number;
@@ -16,6 +17,19 @@ type SalesSummary = {
 };
 
 export default function Home() {
+    const { data: session } = authClient.useSession();
+
+  const userName = session?.user?.name || session?.user?.email || "";
+
+  const userInitials =
+    userName
+      .trim()
+      .split(/\s+/)
+      .map((part) => part[0])
+      .join("")
+      .slice(0, 2)
+      .toUpperCase() || "??";
+
   const [products, setProducts] = useState<any[]>([]);
 
   const [salesSummary, setSalesSummary] = useState<SalesSummary>({
@@ -364,7 +378,7 @@ export default function Home() {
           </div>
 
           <button className="profile-button">
-            AH
+            {userInitials}
           </button>
         </header>
 
