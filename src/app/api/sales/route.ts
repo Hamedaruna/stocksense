@@ -1,7 +1,26 @@
+import { NextResponse } from "next/server";
+import { headers } from "next/headers";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+
+async function getSession() {
+  return auth.api.getSession({
+    headers: await headers(),
+  });
+}
 
 export async function GET(request: Request) {
   try {
+    const session = await getSession();
+
+    if (!session) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    const userId = session.user.id;
 
     const { searchParams } = new URL(request.url);
 
@@ -10,6 +29,9 @@ export async function GET(request: Request) {
 
     const sales = await prisma.sale.findMany({
       where: {
+        product: {
+          userId,
+        },
         createdAt: {
           ...(from ? { gte: new Date(from) } : {}),
           ...(to ? { lte: new Date(to) } : {}),
@@ -22,6 +44,7 @@ export async function GET(request: Request) {
         createdAt: "desc",
       },
     });
+
     const totalRevenue = sales.reduce(
       (total, sale) => total + sale.total,
       0
@@ -145,29 +168,25 @@ export async function GET(request: Request) {
       (a, b) => b.quantitySold - a.quantitySold
     );
 
-    return Response.json({
+    return NextResponse.json({
       sales,
-
       summary: {
         totalRevenue,
         totalUnits,
         totalTransactions,
-
         thisWeekRevenue,
         lastWeekRevenue,
         thisWeekUnits,
         lastWeekUnits,
-
         revenueChange,
         unitsChange,
       },
-
       topProducts,
     });
   } catch (error) {
     console.error("GET SALES ERROR:", error);
 
-    return Response.json(
+    return NextResponse.json(
       { error: "Failed to fetch sales" },
       { status: 500 }
     );
@@ -176,136 +195,174 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const session = await getSession();
+
+    if (!session) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    const userId = session.user.id;
+
     const body = await request.json();
 
     const productId = Number(body.productId);
     const quantity = Number(body.quantity);
 
     if (!productId || !quantity || quantity <= 0) {
-      return Response.json(
+      return NextResponse.json(
         { error: "Product and quantity are required" },
         { status: 400 }
       );
     }
 
-    const product = await prisma.product.findUnique({
+    // Only allow the authenticated user
+    // to sell their own product.
+    const product = await prisma.product.findFirst({
       where: {
         id: productId,
+        userId,
       },
     });
 
     if (!product) {
-      return Response.json(
+      return NextResponse.json(
         { error: "Product not found" },
         { status: 404 }
       );
     }
 
     if (quantity > product.stock) {
-      return Response.json(
+      return NextResponse.json(
         { error: "Not enough stock available" },
         { status: 400 }
       );
     }
 
-  
     const total = product.price * quantity;
 
-   const result = await prisma.$transaction(async (tx) => {
-      const sale = await tx.sale.create({
-        data: {
-          productId: product.id,
-          quantity,
-          price: product.price,
-          total,
-        },
-        include: {
-          product: true,
-        },
-      });
-
-      await tx.product.update({
-        where: {
-          id: product.id,
-        },
-        data: {
-          stock: {
-            decrement: quantity,
+    const result = await prisma.$transaction(
+      async (tx) => {
+        const sale = await tx.sale.create({
+          data: {
+            productId: product.id,
+            quantity,
+            price: product.price,
+            total,
           },
-        },
-      });
+          include: {
+            product: true,
+          },
+        });
 
-      await tx.inventoryHistory.create({
-        data: {
-          type: "SALE",
-          quantity,
-          productId: product.id,
-        },
-      });
+        await tx.product.update({
+          where: {
+            id: product.id,
+          },
+          data: {
+            stock: {
+              decrement: quantity,
+            },
+          },
+        });
 
-      return sale;
+        await tx.inventoryHistory.create({
+          data: {
+            type: "SALE",
+            quantity,
+            productId: product.id,
+          },
+        });
+
+        return sale;
+      }
+    );
+
+    return NextResponse.json(result, {
+      status: 201,
     });
-
-    return Response.json(result, { status: 201 });
   } catch (error) {
     console.error("CREATE SALE ERROR:", error);
 
-    return Response.json(
+    return NextResponse.json(
       { error: "Failed to record sale" },
       { status: 500 }
     );
   }
 }
 
-    export async function DELETE(request: Request) {
+export async function DELETE(request: Request) {
   try {
+    const session = await getSession();
+
+    if (!session) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    const userId = session.user.id;
+
     const body = await request.json();
 
     const saleId = Number(body.id);
 
     if (!saleId) {
-      return Response.json(
+      return NextResponse.json(
         { error: "Sale ID is required" },
         { status: 400 }
       );
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      const sale = await tx.sale.findUnique({
-        where: {
-          id: saleId,
+    // Find the sale only if its product
+    // belongs to the authenticated user.
+    const sale = await prisma.sale.findFirst({
+      where: {
+        id: saleId,
+        product: {
+          userId,
         },
-      });
-
-      if (!sale) {
-        throw new Error("Sale not found");
-      }
-
-      await tx.product.update({
-        where: {
-          id: sale.productId,
-        },
-        data: {
-          stock: {
-            increment: sale.quantity,
-          },
-        },
-      });
-
-      await tx.sale.delete({
-        where: {
-          id: saleId,
-        },
-      });
-
-      return sale;
+      },
     });
 
-    return Response.json(result);
+    if (!sale) {
+      return NextResponse.json(
+        { error: "Sale not found" },
+        { status: 404 }
+      );
+    }
+
+    const result = await prisma.$transaction(
+      async (tx) => {
+        await tx.product.update({
+          where: {
+            id: sale.productId,
+          },
+          data: {
+            stock: {
+              increment: sale.quantity,
+            },
+          },
+        });
+
+        await tx.sale.delete({
+          where: {
+            id: sale.id,
+          },
+        });
+
+        return sale;
+      }
+    );
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("DELETE SALE ERROR:", error);
 
-    return Response.json(
+    return NextResponse.json(
       { error: "Failed to delete sale" },
       { status: 500 }
     );

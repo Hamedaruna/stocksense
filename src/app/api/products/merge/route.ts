@@ -1,8 +1,35 @@
 import { NextResponse } from "next/server";
+import { headers } from "next/headers";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+
+async function getSession() {
+  return auth.api.getSession({
+    headers: await headers(),
+  });
+}
 
 export async function POST(request: Request) {
   try {
+    // -----------------------------
+    // AUTHENTICATION
+    // -----------------------------
+
+    const session = await getSession();
+
+    if (!session) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    const userId = session.user.id;
+
+    // -----------------------------
+    // READ REQUEST
+    // -----------------------------
+
     const body = await request.json();
 
     const sourceId = Number(body.sourceId);
@@ -17,17 +44,27 @@ export async function POST(request: Request) {
       );
     }
 
-    const source = await prisma.product.findUnique({
+    // -----------------------------
+    // FIND PRODUCTS
+    // -----------------------------
+
+    const source = await prisma.product.findFirst({
       where: {
         id: sourceId,
+        userId,
       },
     });
 
-    const target = await prisma.product.findUnique({
+    const target = await prisma.product.findFirst({
       where: {
         id: targetId,
+        userId,
       },
     });
+
+    // Important:
+    // Because both products are filtered by userId,
+    // a user cannot merge another user's product.
 
     if (!source || !target) {
       return NextResponse.json(
@@ -37,6 +74,10 @@ export async function POST(request: Request) {
         { status: 404 }
       );
     }
+
+    // -----------------------------
+    // CHECK PRODUCT NAMES
+    // -----------------------------
 
     const sourceName = source.name.trim().toLowerCase();
     const targetName = target.name.trim().toLowerCase();
@@ -51,13 +92,12 @@ export async function POST(request: Request) {
       );
     }
 
+    // -----------------------------
+    // MERGE
+    // -----------------------------
+
     const result = await prisma.$transaction(async (tx) => {
-      /*
-       * Move all sales from the duplicate product
-       * to the main product.
-       *
-       * Sale.price and Sale.total stay exactly the same.
-       */
+      // Move sales from duplicate → main product
       await tx.sale.updateMany({
         where: {
           productId: sourceId,
@@ -67,9 +107,7 @@ export async function POST(request: Request) {
         },
       });
 
-      /*
-       * Move all inventory history to the main product.
-       */
+      // Move inventory history
       await tx.inventoryHistory.updateMany({
         where: {
           productId: sourceId,
@@ -79,9 +117,7 @@ export async function POST(request: Request) {
         },
       });
 
-      /*
-       * Combine the current stock.
-       */
+      // Combine stock
       const updatedTarget = await tx.product.update({
         where: {
           id: targetId,
@@ -93,11 +129,7 @@ export async function POST(request: Request) {
         },
       });
 
-      /*
-       * Now the duplicate product has no
-       * sales/history attached to it, so it
-       * can safely be removed.
-       */
+      // Delete duplicate
       await tx.product.delete({
         where: {
           id: sourceId,

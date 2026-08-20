@@ -8,18 +8,23 @@ datasource db {
 }
 
 model Product {
-  id            Int      @id @default(autoincrement())
+  id            Int     @id @default(autoincrement())
   name          String
   category      String?
   price         Float
   stock         Int
-  lowStockLimit Int      @default(5)
-  leadTimeDays  Int      @default(7)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  lowStockLimit Int     @default(5)
+  leadTimeDays  Int     @default(7)
+  userId        String?
 
-  sales         Sale[]
-  history       InventoryHistory[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user    User?              @relation(fields: [userId], references: [id])
+  sales   Sale[]
+  history InventoryHistory[]
+
+  @@index([userId])
 }
 
 model Sale {
@@ -30,7 +35,7 @@ model Sale {
   createdAt DateTime @default(now())
 
   productId Int
-  product   Product  @relation(fields: [productId], references: [id])
+  product   Product @relation(fields: [productId], references: [id])
 }
 
 model InventoryHistory {
@@ -40,20 +45,21 @@ model InventoryHistory {
   createdAt DateTime @default(now())
 
   productId Int
-  product   Product  @relation(fields: [productId], references: [id])
+  product   Product @relation(fields: [productId], references: [id])
 }
 
 model User {
-  id            String    @id
+  id            String   @id
   name          String
   email         String
-  emailVerified Boolean   @default(false)
+  emailVerified Boolean  @default(false)
   image         String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  sessions      Session[]
-  accounts      Account[]
+  sessions Session[]
+  accounts Account[]
+  products Product[]
 
   @@unique([email])
   @@map("user")
@@ -69,7 +75,7 @@ model Session {
   userAgent String?
   userId    String
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([token])
   @@index([userId])
@@ -77,12 +83,12 @@ model Session {
 }
 
 model Account {
-  id                    String    @id
-  accountId             String
-  providerId            String
-  userId                String
+  id         String @id
+  accountId  String
+  providerId String
+  userId     String
 
-  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   accessToken           String?
   refreshToken          String?
@@ -92,8 +98,8 @@ model Account {
   scope                 String?
   password              String?
 
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([userId])
   @@map("account")

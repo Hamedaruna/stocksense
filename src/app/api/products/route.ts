@@ -1,34 +1,69 @@
 import { NextResponse } from "next/server";
+import { headers } from "next/headers";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+
+async function getSession() {
+  return auth.api.getSession({
+    headers: await headers(),
+  });
+}
 
 export async function GET() {
   try {
+    const session = await getSession();
+
+    if (!session) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    const userId = session.user.id;
+
     const products = await prisma.product.findMany({
+      where: {
+        userId,
+      },
       orderBy: {
         createdAt: "desc",
       },
     });
 
-    
+    const productIds = products.map((product) => product.id);
 
-    const soldData = await prisma.sale.groupBy({
-      by: ["productId"],
-      _sum: {
-        quantity: true,
-      },
-    });
+    const soldData =
+      productIds.length > 0
+        ? await prisma.sale.groupBy({
+            by: ["productId"],
+            where: {
+              productId: {
+                in: productIds,
+              },
+            },
+            _sum: {
+              quantity: true,
+            },
+          })
+        : [];
 
-    // Look at sales from the last 30 days
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const recentSales = await prisma.sale.findMany({
-      where: {
-        createdAt: {
-          gte: thirtyDaysAgo,
-        },
-      },
-    });
+    const recentSales =
+      productIds.length > 0
+        ? await prisma.sale.findMany({
+            where: {
+              productId: {
+                in: productIds,
+              },
+              createdAt: {
+                gte: thirtyDaysAgo,
+              },
+            },
+          })
+        : [];
 
     const productsWithSold = products.map((product) => {
       const sold = soldData.find(
@@ -37,72 +72,60 @@ export async function GET() {
 
       const totalSold = sold?._sum.quantity ?? 0;
 
-      // Sales during the last 30 days
       const recentProductSales = recentSales
         .filter((sale) => sale.productId === product.id)
-        .reduce((total, sale) => total + sale.quantity, 0);
+        .reduce(
+          (total, sale) => total + sale.quantity,
+          0
+        );
 
-      // Average units sold per day
       const salesPerDay = recentProductSales / 30;
 
-      // Estimated number of days current stock will last
       const estimatedDaysRemaining =
         salesPerDay > 0
           ? Math.round(product.stock / salesPerDay)
           : null;
 
-     // ------------------------------------------------
-// SMART RESTOCK RECOMMENDATION
-// ------------------------------------------------
+      const leadTimeDays = product.leadTimeDays;
 
-// Supplier lead time
-const leadTimeDays = product.leadTimeDays;
+      const leadTimeDemand = Math.ceil(
+        salesPerDay * leadTimeDays
+      );
 
-// Expected sales while waiting for new stock
-const leadTimeDemand = Math.ceil(
-  salesPerDay * leadTimeDays
-);
+      const safetyStock = product.lowStockLimit * 2;
 
-// Keep a safety buffer
-const safetyStock = product.lowStockLimit * 2;
+      const reorderPoint = Math.max(
+        leadTimeDemand + safetyStock,
+        product.lowStockLimit
+      );
 
-// Reorder point:
-// expected demand during supplier lead time
-// + safety stock
-const reorderPoint = Math.max(
-  leadTimeDemand + safetyStock,
-  product.lowStockLimit
-);
+      let recommendedRestock = 0;
 
-// Only recommend a purchase when stock is
-// below the reorder point.
-let recommendedRestock = 0;
+      if (
+        salesPerDay > 0 &&
+        product.stock <= reorderPoint
+      ) {
+        const targetStock = Math.ceil(
+          salesPerDay * 30 + safetyStock
+        );
 
-if (
-  salesPerDay > 0 &&
-  product.stock <= reorderPoint
-) {
-  // Target enough stock for roughly 30 days
-  // of expected demand + safety stock.
-  const targetStock = Math.ceil(
-    salesPerDay * 30 + safetyStock
-  );
+        recommendedRestock = Math.max(
+          0,
+          targetStock - product.stock
+        );
+      }
 
-  recommendedRestock = Math.max(
-    0,
-    targetStock - product.stock
-  );
-}
+      let recommendation =
+        "Stock level looks healthy.";
 
-let recommendation = "Stock level looks healthy.";
-
-if (salesPerDay <= 0) {
-  recommendation = "Not enough sales data for a reliable recommendation.";
-} else if (product.stock <= reorderPoint) {
-  recommendation = `Stock may run low within ${leadTimeDays} days.`;
-} else if (estimatedDaysRemaining !== null) {
-  recommendation = `Current stock should last about ${estimatedDaysRemaining} days.`;
-}
+      if (salesPerDay <= 0) {
+        recommendation =
+          "Not enough sales data for a reliable recommendation.";
+      } else if (product.stock <= reorderPoint) {
+        recommendation = `Stock may run low within ${leadTimeDays} days.`;
+      } else if (estimatedDaysRemaining !== null) {
+        recommendation = `Current stock should last about ${estimatedDaysRemaining} days.`;
+      }
 
       let status = "No sales yet";
 
@@ -134,33 +157,47 @@ if (salesPerDay <= 0) {
     });
 
     return NextResponse.json(productsWithSold);
-   } catch (error) {
-    console.error("FAILED TO CREATE PRODUCT:", error);
+  } catch (error) {
+    console.error("FAILED TO FETCH PRODUCTS:", error);
 
     return NextResponse.json(
       {
-        error: "Failed to create product",
-        details: error instanceof Error ? error.message : String(error),
+        error: "Failed to fetch products",
+        details:
+          error instanceof Error
+            ? error.message
+            : String(error),
       },
       { status: 500 }
     );
   }
 }
 
-
-
 export async function POST(request: Request) {
   try {
+    const session = await getSession();
+
+    if (!session) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    const userId = session.user.id;
+
     const body = await request.json();
 
     const name = String(body.name || "").trim();
+
     const category = body.category
       ? String(body.category).trim()
       : null;
 
     const price = Number(body.price);
     const stock = Number(body.stock);
-    const leadTimeDays = Number(body.leadTimeDays) || 7;
+    const leadTimeDays =
+      Number(body.leadTimeDays) || 7;
 
     if (!name) {
       return NextResponse.json(
@@ -183,20 +220,23 @@ export async function POST(request: Request) {
       );
     }
 
-    // Prevent duplicate product names.
-    // "Egg", "egg", and " egg " are treated as the same product.
-    const existingProducts = await prisma.product.findMany({
-      select: {
-        id: true,
-        name: true,
-      },
-    });
+    const existingProducts =
+      await prisma.product.findMany({
+        where: {
+          userId,
+        },
+        select: {
+          id: true,
+          name: true,
+        },
+      });
 
     const normalizedName = name.toLowerCase();
 
     const duplicate = existingProducts.find(
       (product) =>
-        product.name.trim().toLowerCase() === normalizedName
+        product.name.trim().toLowerCase() ===
+        normalizedName
     );
 
     if (duplicate) {
@@ -215,10 +255,13 @@ export async function POST(request: Request) {
         price,
         stock,
         leadTimeDays,
+        userId,
       },
     });
 
-    return NextResponse.json(product, { status: 201 });
+    return NextResponse.json(product, {
+      status: 201,
+    });
   } catch (error) {
     console.error("FAILED TO CREATE PRODUCT:", error);
 
@@ -231,6 +274,17 @@ export async function POST(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
+    const session = await getSession();
+
+    if (!session) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    const userId = session.user.id;
+
     const body = await request.json();
 
     const productId = Number(body.id);
@@ -239,15 +293,17 @@ export async function PATCH(request: Request) {
     if (!productId || !quantity || quantity <= 0) {
       return NextResponse.json(
         {
-          error: "Product ID and a valid restock quantity are required.",
+          error:
+            "Product ID and a valid restock quantity are required.",
         },
         { status: 400 }
       );
     }
 
-    const product = await prisma.product.findUnique({
+    const product = await prisma.product.findFirst({
       where: {
         id: productId,
+        userId,
       },
     });
 
@@ -260,28 +316,31 @@ export async function PATCH(request: Request) {
       );
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      const updatedProduct = await tx.product.update({
-        where: {
-          id: productId,
-        },
-        data: {
-          stock: {
-            increment: quantity,
+    const result = await prisma.$transaction(
+      async (tx) => {
+        const updatedProduct =
+          await tx.product.update({
+            where: {
+              id: productId,
+            },
+            data: {
+              stock: {
+                increment: quantity,
+              },
+            },
+          });
+
+        await tx.inventoryHistory.create({
+          data: {
+            type: "RESTOCK",
+            quantity,
+            productId,
           },
-        },
-      });
+        });
 
-      await tx.inventoryHistory.create({
-        data: {
-          type: "RESTOCK",
-          quantity,
-          productId,
-        },
-      });
-
-      return updatedProduct;
-    });
+        return updatedProduct;
+      }
+    );
 
     return NextResponse.json(result);
   } catch (error) {
@@ -296,18 +355,41 @@ export async function PATCH(request: Request) {
   }
 }
 
-
-
 export async function DELETE(request: Request) {
   try {
+    const session = await getSession();
+
+    if (!session) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    const userId = session.user.id;
+
     const { id } = await request.json();
 
     const productId = Number(id);
 
     if (!productId) {
-      return Response.json(
+      return NextResponse.json(
         { error: "Product ID is required" },
         { status: 400 }
+      );
+    }
+
+    const product = await prisma.product.findFirst({
+      where: {
+        id: productId,
+        userId,
+      },
+    });
+
+    if (!product) {
+      return NextResponse.json(
+        { error: "Product not found." },
+        { status: 404 }
       );
     }
 
@@ -318,7 +400,7 @@ export async function DELETE(request: Request) {
     });
 
     if (salesCount > 0) {
-      return Response.json(
+      return NextResponse.json(
         {
           error:
             "This product has sales history and cannot be deleted. Merge it with another product instead.",
@@ -333,13 +415,13 @@ export async function DELETE(request: Request) {
       },
     });
 
-    return Response.json({
+    return NextResponse.json({
       success: true,
     });
   } catch (error) {
     console.error("DELETE PRODUCT ERROR:", error);
 
-    return Response.json(
+    return NextResponse.json(
       { error: "Failed to delete product" },
       { status: 500 }
     );
